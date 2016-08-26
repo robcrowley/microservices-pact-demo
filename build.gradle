@@ -1,0 +1,139 @@
+import com.wiredforcode.gradle.spawn.*
+
+buildscript {
+    repositories {
+        jcenter()
+        mavenCentral()
+        maven { url "https://repo.spring.io/snapshot" }
+        maven { url "https://repo.spring.io/milestone" }
+        maven { url 'http://dl.bintray.com/vermeulen-mp/gradle-plugins' }
+
+    }
+    
+    dependencies {
+        classpath 'com.wiredforcode:gradle-spawn-plugin:0.6.0'
+        classpath 'org.springframework.boot:spring-boot-gradle-plugin:1.4.0.RELEASE'
+        classpath 'au.com.dius:pact-jvm-provider-gradle_2.11:3.2.13'
+        classpath('se.transmode.gradle:gradle-docker:1.2')
+    }
+}
+
+allprojects {
+    apply plugin: 'java'
+
+    repositories {
+        jcenter()
+        mavenCentral()       
+        maven { url 'https://repo.spring.io/snapshot' }
+        maven { url 'https://repo.spring.io/milestone' }
+    }
+}
+
+subprojects {
+    apply plugin: 'docker'
+    apply plugin: 'spring-boot'
+    apply plugin: 'au.com.dius.pact'
+
+    group = 'rdc'
+
+    sourceCompatibility = 1.8
+    targetCompatibility = 1.8
+
+    dependencies {
+        
+        compile 'org.springframework.boot:spring-boot-starter-jersey'
+        
+        compile 'com.theoryinpractise:halbuilder-standard:4.0.1'
+        
+        compile 'com.theoryinpractise:halbuilder-jaxrs:1.1.1'
+        
+        compile 'org.slf4j:slf4j-api:1.7.21'
+        
+        testCompile 'junit:junit:4.12'
+                
+        testCompile 'org.springframework.boot:spring-boot-starter-test'
+    }
+    
+    task buildDocker(type: Docker, dependsOn: build) {
+        push = false
+        applicationName = jar.baseName
+        dockerfile = file 'src/main/docker/Dockerfile'
+        doFirst {
+            copy {
+                from jar
+                into stageDir
+            }
+       }
+   }
+}
+
+project ':consumer', {
+    version = '1.2.2'
+    
+    jar {
+        baseName = 'consumer'
+    }
+    
+    jar.doFirst {
+        version = "$project.version"
+    }
+    
+    dependencies {
+        testCompile 'au.com.dius:pact-jvm-consumer-junit_2.11:3.2.13'
+    }
+    
+    test {
+        systemProperties['pact.rootDir'] = "$buildDir/pacts"
+    }
+    
+    pact {
+        serviceProviders {
+            dummy {
+            }
+        }
+        
+        publish {
+            pactBrokerUrl = brokerUrl
+        }
+    }
+}
+
+project ':provider', {    
+    apply plugin: 'com.wiredforcode.spawn'
+    
+    jar {
+        baseName = 'provider'
+    }
+     
+    task startProvider(type: SpawnProcessTask, dependsOn: 'assemble') {
+        command "java -jar $buildDir/libs/${jar.baseName}.jar"
+        ready 'Started Application'
+    }
+
+    task terminateProvider(type: KillProcessTask)
+    
+    pact {
+        serviceProviders {
+            Product_Catalogue_Provider {
+                if ('pactVerify' in gradle.startParameter.taskNames) {
+                    startProviderTask = 'startProvider'
+                    terminateProviderTask = 'terminateProvider'
+                    
+                    stateChangeUrl = url providerStateUrl
+                    stateChangeTeardown = true 
+                    
+                    hasPactsFromPactBroker brokerUrl
+                    hasPactWith 'Product_Catalogue_Consumer', {
+                        pactFile = url "$brokerUrl/pacts/provider/Product_Catalogue_Provider/consumer/Product_Catalogue_Consumer/latest/prod"
+                    }
+                }
+            }
+        }
+        
+        reports {
+            markdown
+            console
+            json
+        }
+    }
+}
